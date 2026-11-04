@@ -4,7 +4,6 @@
 #pragma once
 
 #include <array>
-#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -21,11 +20,9 @@ constexpr size_t MaxInSessions = 4;
 /**
  * Manages all audio in sessions.
  */
-/// Shared with every open session, so a session closed after the service still finds it.
-class Manager : public std::enable_shared_from_this<Manager> {
+class Manager {
 public:
     explicit Manager(Core::System& system);
-    ~Manager();
 
     /**
      * Acquire a free session id for opening a new audio in.

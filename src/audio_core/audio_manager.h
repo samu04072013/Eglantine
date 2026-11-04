@@ -61,12 +61,6 @@ public:
     Result SetInManager(BufferEventFunc buffer_func);
 
     /**
-     * Unregister a manager before it is destroyed. Waits for any callback to it in progress, so the
-     * thread never calls into a destroyed manager (services shut down before the audio core).
-     */
-    void ClearManager(Event::Type type);
-
-    /**
      * Set an event to signalled, and signal the thread.
      *
      * @param type      - Manager type to set.

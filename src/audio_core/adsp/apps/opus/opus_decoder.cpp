@@ -84,8 +84,6 @@ void OpusDecoder::Main(std::stop_token stop_token) {
         auto msg = Receive(Direction::DSP, stop_token);
         switch (msg) {
         case Shutdown:
-            OpusDecodeObject::ReleaseAll();
-            OpusMultiStreamDecodeObject::ReleaseAll();
             Send(Direction::Host, Message::ShutdownOK);
             return;
 

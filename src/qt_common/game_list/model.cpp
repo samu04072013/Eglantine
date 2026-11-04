@@ -44,21 +44,9 @@ GameListModel::GameListModel(std::shared_ptr<FileSys::VfsFilesystem> vfs_,
     setSortRole(GameListItemPath::SortRole);
 }
 
-GameListModel::~GameListModel() {
-    StopWorker();
-}
-
-void GameListModel::SetScanEnabled(bool enabled) {
-    scan_enabled = enabled;
-    if (!enabled) {
-        StopWorker();
-    }
-}
+GameListModel::~GameListModel() = default;
 
 void GameListModel::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
-    if (!scan_enabled || system.IsPoweredOn()) {
-        return;
-    }
     emit PopulatingStarted();
 
     StopWorker();
@@ -74,14 +62,11 @@ void GameListModel::PopulateAsync(QVector<UISettings::GameDir>& game_dirs) {
 }
 
 void GameListModel::WorkerEvent() {
-    if (current_worker) {
-        current_worker->ProcessEvents(this);
-    }
+    current_worker->ProcessEvents(this);
 }
 
 void GameListModel::AddDirEntry(GameListDir* entry_items) {
     if (m_flat) {
-        delete entry_items;
         return;
     }
     invisibleRootItem()->appendRow(entry_items);
@@ -187,7 +172,7 @@ void GameListModel::StopWorker() {
 void GameListModel::Repopulate() {
     // CreateFactories replaces the content providers a running game reads from. Stopping
     // emulation repopulates the list anyway, so skip watcher-driven reloads until then.
-    if (!scan_enabled || QtCommon::system->IsPoweredOn()) {
+    if (QtCommon::system->IsPoweredOn()) {
         LOG_INFO(Frontend, "Emulation is running, deferring game list reload.");
         return;
     }

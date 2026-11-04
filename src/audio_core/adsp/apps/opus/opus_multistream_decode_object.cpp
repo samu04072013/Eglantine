@@ -4,10 +4,6 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <memory>
-#include <mutex>
-#include <unordered_map>
-
 #include "audio_core/adsp/apps/opus/opus_multistream_decode_object.h"
 #include "common/assert.h"
 
@@ -15,26 +11,6 @@ namespace AudioCore::ADSP::OpusDecoder {
 
 namespace {
 constexpr u32 OpusStreamCountMax = 255;
-
-// opus_multistream_decoder_get_size of libopus built without the DRED/OSCE neural features: the
-// stream layout header, then one decoder per stream, each aligned to 8 bytes. See
-// OpusDecodeObject's sizes for why this must not come from the host libopus.
-constexpr u32 MultiStreamHeaderSize = 272;
-constexpr u32 AlignedMonoDecoderSize = 18472;
-constexpr u32 AlignedStereoDecoderSize = 27240;
-
-struct LibOpusMSDecoderDeleter {
-    void operator()(LibOpusMSDecoder* decoder) const {
-        opus_multistream_decoder_destroy(decoder);
-    }
-};
-
-// The libopus state of each work buffer is kept on the host, as its real size may exceed the
-// work buffer size we report.
-std::mutex decoders_mutex;
-std::unordered_map<const OpusMultiStreamDecodeObject*,
-                   std::unique_ptr<LibOpusMSDecoder, LibOpusMSDecoderDeleter>>
-    decoders;
 
 bool IsValidStreamCounts(u32 total_stream_count, u32 stereo_stream_count) {
     return total_stream_count > 0 && total_stream_count <= OpusStreamCountMax &&
@@ -46,9 +22,8 @@ bool IsValidStreamCounts(u32 total_stream_count, u32 stereo_stream_count) {
 u32 OpusMultiStreamDecodeObject::GetWorkBufferSize(u32 total_stream_count,
                                                    u32 stereo_stream_count) {
     if (IsValidStreamCounts(total_stream_count, stereo_stream_count)) {
-        return static_cast<u32>(sizeof(OpusMultiStreamDecodeObject)) + MultiStreamHeaderSize +
-               stereo_stream_count * AlignedStereoDecoderSize +
-               (total_stream_count - stereo_stream_count) * AlignedMonoDecoderSize;
+        return static_cast<u32>(sizeof(OpusMultiStreamDecodeObject)) +
+               opus_multistream_decoder_get_size(total_stream_count, stereo_stream_count);
     }
     return 0;
 }
@@ -69,17 +44,6 @@ OpusMultiStreamDecodeObject& OpusMultiStreamDecodeObject::Initialize(u64 buffer,
     return *new_decoder;
 }
 
-void OpusMultiStreamDecodeObject::ReleaseAll() {
-    std::scoped_lock lock{decoders_mutex};
-    decoders.clear();
-}
-
-LibOpusMSDecoder* OpusMultiStreamDecodeObject::GetDecoder() const {
-    std::scoped_lock lock{decoders_mutex};
-    const auto it = decoders.find(this);
-    return it != decoders.end() ? it->second.get() : nullptr;
-}
-
 s32 OpusMultiStreamDecodeObject::InitializeDecoder(u32 sample_rate, u32 total_stream_count,
                                                    u32 channel_count, u32 stereo_stream_count,
                                                    u8* mappings) {
@@ -87,21 +51,15 @@ s32 OpusMultiStreamDecodeObject::InitializeDecoder(u32 sample_rate, u32 total_st
         return OPUS_INVALID_STATE;
     }
 
-    if (initialized && GetDecoder() != nullptr) {
+    if (initialized) {
         return OPUS_OK;
     }
 
-    int ret{};
-    LibOpusMSDecoder* decoder = opus_multistream_decoder_create(
-        static_cast<opus_int32>(sample_rate), static_cast<int>(channel_count),
-        static_cast<int>(total_stream_count), static_cast<int>(stereo_stream_count), mappings,
-        &ret);
+    // See OpusDecodeObject::InitializeDecoder for an explanation of this
+    decoder = (LibOpusMSDecoder*)(this + 1);
+    s32 ret = opus_multistream_decoder_init(decoder, sample_rate, channel_count, total_stream_count,
+                                            stereo_stream_count, mappings);
     if (ret == OPUS_OK) {
-        {
-            std::scoped_lock lock{decoders_mutex};
-            decoders.insert_or_assign(
-                this, std::unique_ptr<LibOpusMSDecoder, LibOpusMSDecoderDeleter>{decoder});
-        }
         magic = DecodeMultiStreamObjectMagic;
         initialized = true;
         state_valid = true;
@@ -117,24 +75,17 @@ s32 OpusMultiStreamDecodeObject::Shutdown() {
     }
 
     if (initialized) {
-        {
-            std::scoped_lock lock{decoders_mutex};
-            decoders.erase(this);
-        }
         magic = 0x0;
         initialized = false;
         state_valid = false;
         self = nullptr;
         final_range = 0;
+        decoder = nullptr;
     }
     return OPUS_OK;
 }
 
 s32 OpusMultiStreamDecodeObject::ResetDecoder() {
-    LibOpusMSDecoder* decoder = GetDecoder();
-    if (decoder == nullptr) {
-        return OPUS_INVALID_STATE;
-    }
     return opus_multistream_decoder_ctl(decoder, OPUS_RESET_STATE);
 }
 
@@ -143,8 +94,7 @@ s32 OpusMultiStreamDecodeObject::Decode(u32& out_sample_count, u64 output_data,
     ASSERT(initialized);
     out_sample_count = 0;
 
-    LibOpusMSDecoder* decoder = GetDecoder();
-    if (!state_valid || decoder == nullptr) {
+    if (!state_valid) {
         return OPUS_INVALID_STATE;
     }
 

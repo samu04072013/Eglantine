@@ -52,16 +52,12 @@ public:
             const u64* const bitset = slot_vector->stored_bitset.data();
             const u32 size = static_cast<u32>(slot_vector->stored_bitset.size()) * 64;
             if (id.Value() < size) {
-                u32 index = id.Value() + 1;
-                while (index < size) {
-                    const u64 word = bitset[index / 64] >> (index % 64);
-                    if (word != 0) {
-                        index += static_cast<u32>(std::countr_zero(word));
-                        break;
-                    }
-                    index = (index / 64 + 1) * 64;
+                do {
+                    ++id.index;
+                } while (id.Value() < size && !IsValid(bitset));
+                if (id.Value() == size) {
+                    id = SlotId{};
                 }
-                id = index < size ? SlotId{index} : SlotId{};
             }
             return *this;
         }
@@ -143,7 +139,7 @@ public:
         if (it == stored_bitset.end()) {
             return end();
         }
-        const u32 word_index = static_cast<u32>(std::distance(stored_bitset.begin(), it));
+        const u32 word_index = static_cast<u32>(std::distance(it, stored_bitset.begin()));
         const SlotId first_id{word_index * 64 + static_cast<u32>(std::countr_zero(*it))};
         return Iterator(this, first_id);
     }

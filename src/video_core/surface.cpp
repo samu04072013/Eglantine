@@ -4,11 +4,7 @@
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <mutex>
-#include <set>
-
 #include "common/common_types.h"
-#include "common/logging.h"
 #include "common/math_util.h"
 #include "common/settings.h"
 #include "video_core/surface.h"
@@ -101,7 +97,7 @@ PixelFormat PixelFormatFromDepthFormat(Tegra::DepthFormat format) {
     }
 }
 
-std::optional<PixelFormat> TryPixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
+PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
     switch (format) {
     case Tegra::RenderTargetFormat::R32G32B32A32_FLOAT:
     case Tegra::RenderTargetFormat::R32G32B32X32_FLOAT:
@@ -204,29 +200,9 @@ std::optional<PixelFormat> TryPixelFormatFromRenderTargetFormat(Tegra::RenderTar
     case Tegra::RenderTargetFormat::R8_UINT:
         return PixelFormat::R8_UINT;
     default:
-        // The caller decides what to do with a format we cannot decode. Fermi2D has to skip
-        // the copy, see SurfaceFormatIsDecodable users.
-        return std::nullopt;
+        UNIMPLEMENTED_MSG("Unimplemented format={}", format);
+        return PixelFormat::A8B8G8R8_UNORM;
     }
-}
-
-PixelFormat PixelFormatFromRenderTargetFormat(Tegra::RenderTargetFormat format) {
-    if (const auto decoded = TryPixelFormatFromRenderTargetFormat(format)) {
-        return *decoded;
-    }
-    // An unrecognised format here usually means a caller passed a surface descriptor whose
-    // format field was not decoded, not that the format itself is impossible. Log a bounded
-    // number of distinct values and fall back, exactly as the decoded cases do.
-    static std::mutex mutex;
-    static std::set<u32> logged;
-    {
-        const std::scoped_lock lock{mutex};
-        if (logged.size() < 8 && logged.emplace(static_cast<u32>(format)).second) {
-            LOG_CRITICAL(HW_GPU, "Unimplemented format={} ({:#x}), using A8B8G8R8_UNORM",
-                         static_cast<u32>(format), static_cast<u32>(format));
-        }
-    }
-    return PixelFormat::A8B8G8R8_UNORM;
 }
 
 PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format) {
@@ -238,8 +214,6 @@ PixelFormat PixelFormatFromGPUPixelFormat(Service::android::PixelFormat format) 
         return PixelFormat::R5G6B5_UNORM;
     case Service::android::PixelFormat::Bgra8888:
         return PixelFormat::B8G8R8A8_UNORM;
-    case Service::android::PixelFormat::Rgba1010102:
-        return PixelFormat::A2B10G10R10_UNORM;
     default:
         UNIMPLEMENTED_MSG("Unimplemented format={}", format);
         return PixelFormat::A8B8G8R8_UNORM;

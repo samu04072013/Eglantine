@@ -32,9 +32,6 @@
 #include "video_core/vulkan_common/vulkan_device.h"
 #include "video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_core/gpu_logging/gpu_logging.h"
-#ifdef EGLANTINE_STREAMLINE
-#include "video_core/vulkan_common/streamline.h"
-#endif
 
 #if defined(__ANDROID__) && defined(ARCHITECTURE_arm64)
 #include <adrenotools/bcenabler.h>
@@ -478,6 +475,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     const bool is_amd = is_amd_driver || is_radv;
 
     const bool is_intel_windows = driver_id == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS;
+    const bool is_intel_anv = driver_id == VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
 
     const bool is_nvidia = driver_id == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
     const bool is_mvk = driver_id == VK_DRIVER_ID_MOLTENVK;
@@ -528,7 +526,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         IsFormatSupported(VK_FORMAT_D24_UNORM_S8_UINT,
                           VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT, FormatType::Optimal);
 
-    supports_conditional_barriers = !is_intel_windows;
+    supports_conditional_barriers = !(is_intel_anv || is_intel_windows);
 
     CollectPhysicalMemoryInfo();
     CollectToolingInfo();
@@ -745,15 +743,6 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         RemoveExtensionFeature(extensions.descriptor_buffer, features.descriptor_buffer,
                                VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
     }
-#ifdef EGLANTINE_STREAMLINE
-    // NVIDIA's DLSS needs buffer device addresses: keep the feature enabled for
-    // it, but leave Eglantine's own buffers as they are without descriptor buffers.
-    const bool dlss_wants_device_address =
-        streamline_extensions && features.buffer_device_address.bufferDeviceAddress;
-    if (!extensions.descriptor_buffer && dlss_wants_device_address) {
-        extensions.buffer_device_address = false;
-    } else
-#endif
     if (!extensions.descriptor_buffer) {
         RemoveExtensionFeature(extensions.buffer_device_address, features.buffer_device_address,
                                VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
@@ -763,15 +752,6 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
-
-#ifdef EGLANTINE_STREAMLINE
-    if (streamline_extensions) {
-        streamline_attached =
-            Streamline::AttachDevice(instance, physical, *logical, graphics_family, dld);
-    } else if (Streamline::WantsDevice()) {
-        Streamline::Stop();
-    }
-#endif
 
     VmaVulkanFunctions functions{};
     functions.vkGetInstanceProcAddr = dld.vkGetInstanceProcAddr;
@@ -799,14 +779,10 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
             .flags = flags,
             .physicalDevice = physical,
             .device = *logical,
-            // 16 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
+            // 64 MiB blocks on discrete GPUs too: with 256 MiB ones, Switch 2 titles' mix of
             // texture sizes left ~38% of the image blocks empty (2 GB of an 8 GB card in title
-            // 1), which the texture cache counted as used and kept evicting textures for. With
-            // 64 MiB ones textures created and deleted by the thousand still left ~1.7 GB of holes
-            // after ten minutes, with 32 MiB ones ~0.5 GB: a block drains only once all of its
-            // images are gone, and fewer per block drain sooner. VMA gives allocations over half a
-            // block (8 MiB) their own memory, which goes back to the driver when they are freed.
-            .preferredLargeHeapBlockSize = 16u * 1024u * 1024u,
+            // 1), which the texture cache counted as used and kept evicting textures for.
+            .preferredLargeHeapBlockSize = 64u * 1024u * 1024u,
             .pAllocationCallbacks = nullptr,
             .pDeviceMemoryCallbacks = nullptr,
             .pHeapSizeLimit = heap_size_limit != 0 ? heap_size_limits.data() : nullptr,
@@ -826,42 +802,9 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
 }
 
 Device::~Device() {
-#ifdef EGLANTINE_STREAMLINE
-    if (streamline_attached) {
-        Streamline::Stop();
-    }
-#endif
     SaveStaticPipelineCache();
     ShutdownGPULogging();
-    for (auto& pools : separate_pools) {
-        for (VmaPool pool : pools) {
-            if (pool != VK_NULL_HANDLE) {
-                vmaDestroyPool(allocator, pool);
-            }
-        }
-    }
     vmaDestroyAllocator(allocator);
-}
-
-VmaPool Device::GetSeparatePool(SeparatePool kind, u32 memory_type) const {
-    std::scoped_lock lk{separate_pools_mutex};
-    VmaPool& pool = separate_pools[static_cast<u32>(kind)][memory_type];
-    if (pool == VK_NULL_HANDLE) {
-        const VmaPoolCreateInfo ci{
-            .memoryTypeIndex = memory_type,
-            .flags = 0,
-            .blockSize = SeparatePoolBlockSize,
-            .minBlockCount = 0,
-            .maxBlockCount = 0,
-            .priority = 0.f,
-            .minAllocationAlignment = 0,
-            .pMemoryAllocateNext = nullptr,
-        };
-        if (vmaCreatePool(allocator, &ci, &pool) != VK_SUCCESS) {
-            pool = VK_NULL_HANDLE;
-        }
-    }
-    return pool;
 }
 
 void Device::LoadStaticPipelineCache() {
@@ -1147,26 +1090,6 @@ bool Device::GetSuitability(bool requires_swapchain) {
     } else {
         extensions.robustness_2 = false;
     }
-
-#ifdef EGLANTINE_STREAMLINE
-    // The extensions NVIDIA's DLSS asks for, where the device has them all.
-    if (Streamline::WantsDevice()) {
-        const std::vector<std::string> wanted = Streamline::DeviceExtensions();
-        // Streamline may ask for no extensions at all.
-        const bool all = std::ranges::all_of(
-            wanted, [&](const std::string& name) { return supported_extensions.contains(name); });
-        std::string names;
-        for (const std::string& name : wanted) {
-            if (all) {
-                loaded_extensions.insert(name);
-            }
-            names += (names.empty() ? "" : ", ") + name;
-        }
-        streamline_extensions = all;
-        LOG_INFO(Render_Vulkan, "NVIDIA DLSS device extensions: {} ({})",
-                 all ? "enabled" : "unavailable", names.empty() ? "none" : names);
-    }
-#endif
 
 #undef FEATURE_EXTENSION
 #undef EXTENSION
@@ -1592,15 +1515,6 @@ void Device::RemoveUnsuitableExtensions() {
                                VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
     }
 
-    // VK_EXT_mesh_shader: Switch 2 titles draw some geometry with task and mesh programs. Only
-    // the two stages are used; the multiview, shading rate and query features need more.
-    features.mesh_shader.multiviewMeshShader = VK_FALSE;
-    features.mesh_shader.primitiveFragmentShadingRateMeshShader = VK_FALSE;
-    features.mesh_shader.meshShaderQueries = VK_FALSE;
-    extensions.mesh_shader = features.mesh_shader.taskShader && features.mesh_shader.meshShader;
-    RemoveExtensionFeatureIfUnsuitable(extensions.mesh_shader, features.mesh_shader,
-                                       VK_EXT_MESH_SHADER_EXTENSION_NAME);
-
     // VK_KHR_shader_quad_control
     extensions.shader_quad_control = features.shader_quad_control.shaderQuadControl;
     RemoveExtensionFeatureIfUnsuitable(extensions.shader_quad_control, features.shader_quad_control,
@@ -1729,16 +1643,6 @@ u64 Device::GetDeviceMemoryUsage() const {
     return result;
 }
 
-u64 Device::GetDeviceMemorySlack() const {
-    if (allocator == nullptr) {
-        return 0;
-    }
-    std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> heap_budgets{};
-    vmaGetHeapBudgets(allocator, heap_budgets.data());
-    const VmaStatistics& statistics = heap_budgets[main_heap].statistics;
-    return statistics.blockBytes - (std::min)(statistics.blockBytes, statistics.allocationBytes);
-}
-
 u64 Device::GetDeviceMemoryBudget() const {
     if (!extensions.memory_budget) {
         return 0;
@@ -1795,6 +1699,28 @@ void Device::CollectPhysicalMemoryInfo() {
                         value);
         }
     }
+    // EDEN_NX2_VRAM_RESERVE_DIVISOR / _MAX_MIB / EDEN_NX2_VRAM_SCALER_MIB tune the host reserve.
+    u64 reserve_divisor = 8;
+    u64 reserve_max = 1_GiB;
+    u64 scaler_memory_base = 1_GiB;
+    if (const char* value = std::getenv("EDEN_NX2_VRAM_RESERVE_DIVISOR")) {
+        const u64 parsed = std::strtoull(value, nullptr, 10);
+        if (parsed != 0) {
+            reserve_divisor = parsed;
+        }
+    }
+    if (const char* value = std::getenv("EDEN_NX2_VRAM_RESERVE_MAX_MIB")) {
+        const u64 parsed = std::strtoull(value, nullptr, 10);
+        if (parsed != 0) {
+            reserve_max = parsed << 20;
+        }
+    }
+    if (const char* value = std::getenv("EDEN_NX2_VRAM_SCALER_MIB")) {
+        const u64 parsed = std::strtoull(value, nullptr, 10);
+        if (parsed != 0) {
+            scaler_memory_base = parsed << 20;
+        }
+    }
     const auto limit = [this](u64 size) {
         return heap_size_limit != 0 ? (std::min)(size, heap_size_limit) : size;
     };
@@ -1827,12 +1753,14 @@ void Device::CollectPhysicalMemoryInfo() {
         const u64 memory_size = Settings::values.vram_usage_mode.GetValue() == Settings::VramUsageMode::Aggressive ? 6_GiB : 4_GiB;
         device_access_memory = static_cast<u64>(std::max<s64>(std::min<s64>(available_memory - 8_GiB, memory_size), std::min<s64>(local_memory, memory_size)));
     } else {
-        const u64 reserve_memory = std::min<u64>(device_access_memory / 8, 1_GiB);
+        const u64 reserve_memory =
+            std::min<u64>(device_access_memory / reserve_divisor, reserve_max);
         device_access_memory -= reserve_memory;
         if (Settings::values.vram_usage_mode.GetValue() != Settings::VramUsageMode::Aggressive) {
             // Account for resolution scaling in memory limits
             const size_t normal_memory = 6_GiB;
-            const size_t scaler_memory = 1_GiB * Settings::values.resolution_info.ScaleUp(1);
+            const size_t scaler_memory =
+                scaler_memory_base * Settings::values.resolution_info.ScaleUp(1);
             device_access_memory = std::min<u64>(device_access_memory, normal_memory + scaler_memory);
         }
     }

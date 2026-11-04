@@ -113,7 +113,7 @@ if (MSVC AND NOT CXX_CLANG)
         /we4457 # Declaration of 'identifier' hides function parameter
         /we4458 # Declaration of 'identifier' hides class member
         /we4459 # Declaration of 'identifier' hides global declaration
-        /w4505 # 'function': unreferenced local function has been removed
+        /we4505 # 'function': unreferenced local function has been removed
         /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
         /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
         /we4555 # Expression has no effect; expected expression with side-effect
@@ -153,6 +153,10 @@ else()
             $<$<COMPILE_LANGUAGE:C,CXX>:-pipe>
             # Disable RTTI (C++ only)
             $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+    else()
+        # clang-cl: avoid windows.h's min/max macros, as the MSVC branch does (they break
+        # std::min/std::max in the frame generation sources now built on Windows).
+        add_compile_definitions(NOMINMAX)
     endif()
 
     if (ENABLE_WERROR)

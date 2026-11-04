@@ -10,8 +10,6 @@
 #pragma once
 
 #include <array>
-#include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -94,8 +92,6 @@ protected:
     void InitNodeStateChange();
 
     void ResetStations();
-    Result DestroyNetworkImpl();
-    Result DisconnectImpl();
     void UpdateNodes();
 
     void OnSyncNetwork(const NetworkInfo& info);
@@ -122,9 +118,7 @@ protected:
     static constexpr Ssid fake_ssid{"YuzuFakeSsidForLdn"};
 
     bool inited{};
-    mutable std::mutex packet_mutex;
-    std::condition_variable connection_event;
-    std::chrono::nanoseconds connection_timeout{std::chrono::seconds(5)};
+    std::mutex packet_mutex;
     std::array<LanStation, StationCountMax> stations;
     std::array<NodeLatestUpdate, NodeCountMax> node_changes{};
     std::array<u8, NodeCountMax> node_last_states{};

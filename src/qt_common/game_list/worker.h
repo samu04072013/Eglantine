@@ -8,10 +8,8 @@
 
 #include <atomic>
 #include <deque>
-#include <filesystem>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include <QList>
 #include <QObject>
@@ -30,7 +28,6 @@ class System;
 class GameListDir;
 class GameListModel;
 class QStandardItem;
-enum class GameListItemType;
 
 namespace FileSys {
 class NCA;
@@ -76,14 +73,14 @@ private:
     void RecordEvent(F&& func);
 
 private:
-    void AddTitlesToGameList(GameListDir* parent_dir, GameListItemType parent_type);
+    void AddTitlesToGameList(GameListDir* parent_dir);
 
     enum class ScanTarget {
         FillManualContentProvider,
         PopulateGameList,
     };
 
-    void ScanFileSystem(ScanTarget target, const std::vector<std::filesystem::path>& files,
+    void ScanFileSystem(ScanTarget target, const std::string& dir_path, bool deep_scan,
                         GameListDir* parent_dir);
 
     std::shared_ptr<FileSys::VfsFilesystem> vfs;

@@ -135,16 +135,9 @@ HLERequestContext::HLERequestContext(Kernel::KernelCore& kernel_, Core::Memory::
     , memory{memory_}
 {
     cmd_buf[0] = 0;
-    if (thread != nullptr) {
-        thread->Open(kernel);
-    }
 }
 
-HLERequestContext::~HLERequestContext() {
-    if (thread != nullptr) {
-        thread->Close(kernel);
-    }
-}
+HLERequestContext::~HLERequestContext() = default;
 
 void HLERequestContext::ParseCommandBuffer(u32_le* src_cmdbuf, bool incoming) {
     IPC::RequestParser rp(src_cmdbuf);

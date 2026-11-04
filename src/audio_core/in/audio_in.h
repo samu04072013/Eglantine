@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <memory>
 #include <mutex>
 
 #include "audio_core/in/audio_in_system.h"
@@ -135,8 +134,6 @@ public:
     u64 GetPlayedSampleCount() const;
 
 private:
-    /// Keeps the manager alive until this audio in is gone (declared first, destroyed last).
-    std::shared_ptr<Manager> manager_keep_alive;
     /// The AudioIn::Manager this audio in is registered with
     Manager& manager;
     /// Manager's mutex
